@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Stock Quotes</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.3.2/socket.io.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.7.2/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-base-200 p-4">
+    <div class="container mx-auto">
+        <div class="navbar bg-base-100 rounded-box shadow-lg mb-4">
+            <div class="flex-1">
+                <h1 class="text-2xl font-bold px-4">Real-Time Stock Quotes</h1>
+            </div>
+            <div class="flex-none">
+                <div id="connection-status" class="badge badge-error gap-2">
+                    Disconnected
+                </div>
+            </div>
+        </div>
+
+        <div id="stock-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <!-- Stock cards will be dynamically inserted here -->
+        </div>
+    </div>
+
+    <script>
+        // Initialize socket with explicit configuration
+        const socket = io('http://localhost:5000', {
+            transports: ['websocket', 'polling'],
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionAttempts: 5,
+            reconnectionDelayMax: 5000
+        });
+        
+        const stocks = ['AAPL', 'NVDA', 'TSLA', 'MSFT'];
+        let lastPrices = {};
+
+        // Debug logging function with timestamp
+        function log(message, data) {
+            const timestamp = new Date().toLocaleTimeString();
+            const logMsg = data ? `[${timestamp}] ${message} ${JSON.stringify(data)}` : `[${timestamp}] ${message}`;
+            console.log(logMsg);
+        }
+
+        function createStockCard(symbol) {
+            const card = document.createElement('div');
+            card.className = 'card bg-base-100 shadow-xl';
+            card.id = `stock-${symbol}`;
+            card.innerHTML = `
+                <div class="card-body p-4">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="card-title text-xl">${symbol}</h2>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="stats bg-base-200 shadow">
+                            <div class="stat p-2">
+                                <div class="stat-title text-xs">Bid</div>
+                                <div class="stat-value text-lg" id="${symbol}-bid">-</div>
+                                <div class="stat-desc" id="${symbol}-bid-size">Size: -</div>
+                            </div>
+                        </div>
+                        <div class="stats bg-base-200 shadow">
+                            <div class="stat p-2">
+                                <div class="stat-title text-xs">Ask</div>
+                                <div class="stat-value text-lg" id="${symbol}-ask">-</div>
+                                <div class="stat-desc" id="${symbol}-ask-size">Size: -</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            return card;
+        }
+
+        function updatePrice(elementId, newPrice, oldPrice) {
+            const element = document.getElementById(elementId);
+            if (element && newPrice !== undefined && newPrice !== null) {
+                const formattedPrice = Number(newPrice).toFixed(2);
+                element.textContent = formattedPrice;
+                element.classList.remove('text-success', 'text-error');
+                
+                if (oldPrice !== undefined && oldPrice !== null) {
+                    const priceChange = Number(newPrice) - Number(oldPrice);
+                    // Only add class if there's an actual price change
+                    if (priceChange !== 0) {
+                        element.classList.add(priceChange > 0 ? 'text-success' : 'text-error');
+                    }
+                }
+                
+                log(`Updated ${elementId} to ${formattedPrice} (was: ${oldPrice})`);
+            }
+        }
+
+        // Initialize stock cards
+        const stockGrid = document.getElementById('stock-grid');
+        stocks.forEach(symbol => {
+            stockGrid.appendChild(createStockCard(symbol));
+        });
+
+        // Market data handler
+        socket.on("market_data", function(data) {
+            log('Received market data', data);
+            
+            try {
+                if (!data || !data.S) {
+                    log('Invalid data received', data);
+                    return;
+                }
+
+                const symbol = data.S;
+                const card = document.getElementById(`stock-${symbol}`);
+                if (card) {
+                    log(`Processing quote for ${symbol}`, {
+                        bid: data.bp,
+                        ask: data.ap,
+                        bidSize: data.bs,
+                        askSize: data.as
+                    });
+                    
+                    // Update bid/ask prices and sizes with null checks
+                    const lastPrice = lastPrices[symbol] || {};
+                    
+                    if (data.bp !== undefined && data.bp !== null) {
+                        updatePrice(`${symbol}-bid`, data.bp, lastPrice.bid);
+                    }
+                    if (data.ap !== undefined && data.ap !== null) {
+                        updatePrice(`${symbol}-ask`, data.ap, lastPrice.ask);
+                    }
+                    
+                    if (data.bs !== undefined && data.bs !== null) {
+                        document.getElementById(`${symbol}-bid-size`).textContent = `Size: ${data.bs}`;
+                    }
+                    if (data.as !== undefined && data.as !== null) {
+                        document.getElementById(`${symbol}-ask-size`).textContent = `Size: ${data.as}`;
+                    }
+
+                    // Store last prices
+                    lastPrices[symbol] = {
+                        bid: data.bp,
+                        ask: data.ap
+                    };
+
+                    // Add highlight animation
+                    card.classList.remove('animate-pulse');
+                    void card.offsetWidth; // Trigger reflow
+                    card.classList.add('animate-pulse');
+                } else {
+                    log(`Card not found for symbol: ${symbol}`);
+                }
+            } catch (error) {
+                log('Error processing market data', error);
+                console.error(error);
+            }
+        });
+
+        socket.on("connection_response", function(data) {
+            log('Server connection response', data);
+        });
+
+        socket.on("connect", function() {
+            log('Socket connected');
+            const status = document.getElementById('connection-status');
+            status.textContent = 'Connected';
+            status.classList.remove('badge-error');
+            status.classList.add('badge-success');
+        });
+
+        socket.on("disconnect", function() {
+            log('Socket disconnected');
+            const status = document.getElementById('connection-status');
+            status.textContent = 'Disconnected';
+            status.classList.remove('badge-success');
+            status.classList.add('badge-error');
+        });
+
+        socket.on("connect_error", function(error) {
+            log('Socket connection error', error);
+            console.error('Connection error:', error);
+        });
+
+        socket.on("error", function(error) {
+            log('Socket error', error);
+            console.error('Socket error:', error);
+        });
+
+        // Log initial connection attempt
+        log('Initializing socket connection...');
+    </script>
+</body>
+</html>
