@@ -21,6 +21,25 @@
             </div>
         </div>
 
+        <!-- Subscription Controls -->
+        <div class="bg-base-100 rounded-box shadow-lg p-4 mb-4">
+            <h2 class="text-xl font-semibold mb-3">Symbol Subscriptions</h2>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4" id="subscription-controls">
+                {% for symbol in available_symbols %}
+                <div class="form-control">
+                    <label class="cursor-pointer label">
+                        <span class="label-text">{{ symbol }}</span>
+                        <input type="checkbox" 
+                               class="toggle toggle-primary" 
+                               data-symbol="{{ symbol }}"
+                               {% if symbol in active_subscriptions %}checked{% endif %}
+                               onchange="toggleSubscription('{{ symbol }}', this.checked)">
+                    </label>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
         <div id="stock-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <!-- Stock cards will be dynamically inserted here -->
         </div>
@@ -36,7 +55,6 @@
             reconnectionDelayMax: 5000
         });
         
-        const stocks = ['AAPL', 'NVDA', 'TSLA', 'MSFT'];
         let lastPrices = {};
 
         // Debug logging function with timestamp
@@ -85,7 +103,6 @@
                 
                 if (oldPrice !== undefined && oldPrice !== null) {
                     const priceChange = Number(newPrice) - Number(oldPrice);
-                    // Only add class if there's an actual price change
                     if (priceChange !== 0) {
                         element.classList.add(priceChange > 0 ? 'text-success' : 'text-error');
                     }
@@ -95,11 +112,22 @@
             }
         }
 
-        // Initialize stock cards
-        const stockGrid = document.getElementById('stock-grid');
-        stocks.forEach(symbol => {
-            stockGrid.appendChild(createStockCard(symbol));
-        });
+        function toggleSubscription(symbol, isSubscribing) {
+            const action = isSubscribing ? 'subscribe' : 'unsubscribe';
+            socket.emit(action, { symbol: symbol });
+        }
+
+        function updateStockCard(symbol, shouldAdd) {
+            const stockGrid = document.getElementById('stock-grid');
+            const existingCard = document.getElementById(`stock-${symbol}`);
+            
+            if (shouldAdd && !existingCard) {
+                stockGrid.appendChild(createStockCard(symbol));
+            } else if (!shouldAdd && existingCard) {
+                existingCard.remove();
+                delete lastPrices[symbol];
+            }
+        }
 
         // Market data handler
         socket.on("market_data", function(data) {
@@ -121,7 +149,6 @@
                         askSize: data.as
                     });
                     
-                    // Update bid/ask prices and sizes with null checks
                     const lastPrice = lastPrices[symbol] || {};
                     
                     if (data.bp !== undefined && data.bp !== null) {
@@ -138,18 +165,14 @@
                         document.getElementById(`${symbol}-ask-size`).textContent = `Size: ${data.as}`;
                     }
 
-                    // Store last prices
                     lastPrices[symbol] = {
                         bid: data.bp,
                         ask: data.ap
                     };
 
-                    // Add highlight animation
                     card.classList.remove('animate-pulse');
-                    void card.offsetWidth; // Trigger reflow
+                    void card.offsetWidth;
                     card.classList.add('animate-pulse');
-                } else {
-                    log(`Card not found for symbol: ${symbol}`);
                 }
             } catch (error) {
                 log('Error processing market data', error);
@@ -157,8 +180,27 @@
             }
         });
 
+        socket.on("subscription_update", function(data) {
+            log('Subscription update', data);
+            if (data.success) {
+                updateStockCard(data.symbol, data.action === 'subscribe');
+            } else {
+                // Revert the checkbox if the subscription failed
+                const checkbox = document.querySelector(`input[data-symbol="${data.symbol}"]`);
+                if (checkbox) {
+                    checkbox.checked = !checkbox.checked;
+                }
+            }
+        });
+
         socket.on("connection_response", function(data) {
             log('Server connection response', data);
+            // Initialize cards for active subscriptions
+            if (data.active_subscriptions) {
+                data.active_subscriptions.forEach(symbol => {
+                    updateStockCard(symbol, true);
+                });
+            }
         });
 
         socket.on("connect", function() {

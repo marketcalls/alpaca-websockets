@@ -19,12 +19,10 @@ ALPACA_API_KEY = os.getenv('ALPACA_API_KEY')
 ALPACA_SECRET_KEY = os.getenv('ALPACA_SECRET_KEY')
 ALPACA_WSS_URL = os.getenv('ALPACA_WSS_URL')
 
-# Validate environment variables
-if not all([ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_WSS_URL]):
-    raise ValueError("Missing required environment variables. Please check your .env file.")
-
-# Global variable to track WebSocket connection
+# Global variables
 ws_app = None
+AVAILABLE_SYMBOLS = ["AAPL", "MSFT", "NVDA", "TSLA"]
+active_subscriptions = {"AAPL"}  # Set of currently subscribed symbols
 
 def on_message(ws, message):
     """Handles incoming WebSocket messages from Alpaca."""
@@ -71,20 +69,21 @@ def on_open(ws):
     # Subscribe after a short delay to ensure auth is processed
     def delayed_subscribe():
         time.sleep(1)
-        subscribe_data = {
-            "action": "subscribe",
-            "quotes": ["AAPL", "NVDA", "TSLA", "MSFT"]
-        }
-        print(f"\nSubscribing to quotes: {json.dumps(subscribe_data, indent=2)}")
-        ws.send(json.dumps(subscribe_data))
-        print("Subscription data sent")
+        if active_subscriptions:  # Only subscribe if there are active subscriptions
+            subscribe_data = {
+                "action": "subscribe",
+                "quotes": list(active_subscriptions)
+            }
+            print(f"\nSubscribing to quotes: {json.dumps(subscribe_data, indent=2)}")
+            ws.send(json.dumps(subscribe_data))
+            print("Subscription data sent")
 
     threading.Thread(target=delayed_subscribe).start()
 
 def connect_alpaca():
     """Create and connect to Alpaca WebSocket."""
     global ws_app
-    websocket.enableTrace(True)  # Enable debug traces
+    websocket.enableTrace(True)
     ws_app = websocket.WebSocketApp(
         ALPACA_WSS_URL,
         on_message=on_message,
@@ -94,15 +93,67 @@ def connect_alpaca():
     )
     ws_app.run_forever()
 
+def update_subscriptions(symbols_to_subscribe=None, symbols_to_unsubscribe=None):
+    """Update websocket subscriptions."""
+    if not ws_app:
+        return False
+    
+    if symbols_to_subscribe:
+        subscribe_data = {
+            "action": "subscribe",
+            "quotes": list(symbols_to_subscribe)
+        }
+        ws_app.send(json.dumps(subscribe_data))
+        
+    if symbols_to_unsubscribe:
+        unsubscribe_data = {
+            "action": "unsubscribe",
+            "quotes": list(symbols_to_unsubscribe)
+        }
+        ws_app.send(json.dumps(unsubscribe_data))
+    
+    return True
+
 @app.route("/")
 def index():
     """Render the frontend."""
-    return render_template("index.html")
+    return render_template("index.html", 
+                         available_symbols=AVAILABLE_SYMBOLS,
+                         active_subscriptions=list(active_subscriptions))
 
 @socketio.on('connect')
 def handle_connect():
     print(f"\nClient connected! sid: {request.sid}")
-    socketio.emit('connection_response', {'status': 'connected'}, room=request.sid)
+    socketio.emit('connection_response', {
+        'status': 'connected',
+        'active_subscriptions': list(active_subscriptions)
+    }, room=request.sid)
+
+@socketio.on('subscribe')
+def handle_subscribe(data):
+    symbol = data.get('symbol')
+    if symbol and symbol in AVAILABLE_SYMBOLS and symbol not in active_subscriptions:
+        active_subscriptions.add(symbol)
+        success = update_subscriptions(symbols_to_subscribe={symbol})
+        socketio.emit('subscription_update', {
+            'action': 'subscribe',
+            'symbol': symbol,
+            'success': success,
+            'active_subscriptions': list(active_subscriptions)
+        })
+
+@socketio.on('unsubscribe')
+def handle_unsubscribe(data):
+    symbol = data.get('symbol')
+    if symbol and symbol in active_subscriptions:
+        active_subscriptions.remove(symbol)
+        success = update_subscriptions(symbols_to_unsubscribe={symbol})
+        socketio.emit('subscription_update', {
+            'action': 'unsubscribe',
+            'symbol': symbol,
+            'success': success,
+            'active_subscriptions': list(active_subscriptions)
+        })
 
 @socketio.on('disconnect')
 def handle_disconnect():
